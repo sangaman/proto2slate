@@ -1,0 +1,33 @@
+{
+  "name": "proto2slate",
+  "version": "1.0.0",
+  "description": "A tool for converting .proto files to markdown for Slate",
+  "bin": {
+    "proto2slate": "./proto2slate.js"
+  },
+  "scripts": {
+    "compile": "tsc",
+    "prepublish": "npm run compile",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "proto",
+    "protobuf",
+    "protocol",
+    "buffers",
+    "grpc",
+    "slate",
+    "markdown"
+  ],
+  "files": [
+    "proto2slate.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "author": "Daniel McNally <mcnallydp@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^12.12.6",
+    "typescript": "^3.7.5"
+  }
+}
