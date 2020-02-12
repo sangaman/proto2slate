@@ -22,6 +22,12 @@ const slateFile = process.argv[3] || path.join(process.cwd(), `${protoFilename}.
 
 const slateStream = fs.createWriteStream(slateFile);
 
+type Service = {
+  name: string;
+  comment: string;
+  calls: RpcCall[];
+};
+
 type RpcCall = {
   name: string;
   requestType: string;
@@ -49,11 +55,9 @@ type Enum = {
   values: string[];
 }
 
-const calls: RpcCall[] = [];
+const services: Service[] = [];
 const messages = new Map<string, Message>();
 const enums = new Map<string, Enum>();
-let serviceName = '';
-let serviceComment = '';
 
 function printFields(fields: Field[]) {
   writeLine('Parameter | Type | Description');
@@ -86,7 +90,8 @@ let index = 0;
 while (index < lines.length) {
   const line = lines[index].trimLeft();
   if (line.startsWith('service ')) {
-    serviceName = line.substring(8, line.length - 1).trimRight();
+    const serviceName = line.substring(8, line.length - 1).trimRight();
+    let serviceComment = '';
     let commentIndex = 1;
     let commentLine = lines[index - commentIndex].trimLeft();
     while (commentLine !== undefined && commentLine.startsWith('/*') || commentLine.startsWith('*')) {
@@ -94,6 +99,11 @@ while (index < lines.length) {
       commentIndex += 1;
       commentLine = lines[index - commentIndex].trimLeft();
     }
+    services.push({
+      name: serviceName,
+      comment: serviceComment,
+      calls: [],
+    });
   } else if (line.startsWith('rpc ')) {
     const name = line.substring(4, line.indexOf('(')).trim();
     const requestType = line.substring(line.indexOf('(') + 1, line.indexOf(')')).trim();
@@ -116,7 +126,7 @@ while (index < lines.length) {
       commentLine = lines[index - commentIndex].trimLeft();
     }
 
-    calls.push({ name, requestType, responseType, stream, comment, shell });
+    services[services.length - 1].calls.push({ name, requestType, responseType, stream, comment, shell });
   } else if (line.startsWith('message ')) {
     const name = line.substring(8).replace(/[{} ]/g, '')
 
@@ -146,7 +156,8 @@ while (index < lines.length) {
           comment = '';
         } else if (fieldLine.length > 0 &&
           !fieldLine.startsWith('enum ') &&
-          !fieldLine.startsWith('oneof ')) {
+          !fieldLine.startsWith('oneof ') &&
+          fieldLine.split(' ').length > 3) {
           // this line is a field
           const repeated = fieldLine.startsWith('repeated');
           const tokens = fieldLine.split(' ');
@@ -189,11 +200,9 @@ while (index < lines.length) {
   index += 1;
 }
 
-const serviceNameLower = serviceName.toLowerCase();
 
-writeLine(`
----
-title: ${serviceName} API Reference
+writeLine(`---
+title: API Reference
 
 language_tabs:
   - shell
@@ -204,12 +213,14 @@ toc_footers:
   - <a href='https://github.com/lord/slate'>Documentation Powered by Slate</a>
 
 search: true
----
-`);
+---`);
 
-writeLine('# Introduction');
+services.forEach((service) => {
+  const serviceNameLower = service.name.toLowerCase();
 
-writeLine(`\`\`\`javascript
+  writeLine(`# ${service.name} Service`);
+
+  writeLine(`\`\`\`javascript
 var fs = require('fs');
 var grpc = require('grpc');
 var options = {
@@ -219,46 +230,45 @@ var options = {
 var ${serviceNameLower}Proto = grpc.load('${protoBasename}', 'proto', options);
 var tlsCert = fs.readFileSync('path/to/tls.cert');
 var sslCreds = grpc.credentials.createSsl(tlsCert);
-var ${serviceNameLower}Client = new proto.${serviceName}('localhost:8886', sslCreds);
+var ${serviceNameLower}Client = new ${serviceNameLower}Proto.${service.name}(host + ':' + port, sslCreds);
 \`\`\``);
 
-writeLine(`\`\`\`python
+  writeLine(`\`\`\`python
 # Python requires you to generate static protobuf code, see the following guide:
 # https://grpc.io/docs/tutorials/basic/python.html#generating-client-and-server-code
 
 import grpc
-import ${protoBasename}_pb2 as ${serviceNameLower}, ${protoBasename}_pb2_grpc as ${serviceNameLower}rpc
+import ${protoFilename}_pb2 as ${serviceNameLower}, ${protoFilename}_pb2_grpc as ${serviceNameLower}rpc
 cert = open('path/to/tls.cert', 'rb').read()
 ssl_creds = grpc.ssl_channel_credentials(cert)
-channel = grpc.secure_channel('localhost:8886', ssl_creds)
-${serviceNameLower}_stub = ${protoBasename}.${serviceName}Stub(channel)
+channel = grpc.secure_channel(host + ':' + port, ssl_creds)
+${serviceNameLower}_stub = ${protoFilename}.${service.name}Stub(channel)
 \`\`\``);
 
-writeLine(`This is the API documentation for the ${serviceName} gRPC service.`);
-writeLine(serviceComment);
+  writeLine(service.comment);
+    
+  service.calls.forEach((call) => {
+    writeLine(`## ${call.name}`);
 
-writeLine('# RPC Calls');
-calls.forEach((call) => {
-  writeLine(`## ${call.name}`);
+    const request = messages.get(call.requestType)!;
+    const response = messages.get(call.responseType)!;
 
-  const request = messages.get(call.requestType)!;
-  const response = messages.get(call.responseType)!;
-
-  writeLine('```javascript');
-  if (request.fields.length === 0) {
-    writeLine('var request = {};');
-  } else {
-    writeLine('var request = {');
-    request.fields.forEach((field) => {
-      writeLine(`  ${snakeToCamelCase(field.name)}: <${field.type}${field.repeated ? '[]' : ''}>,`);
-    })
-    writeLine('};');
-  }
-  
-  if (call.stream) {
-    writeLine(`var call = ${serviceNameLower}Client.${call.name.charAt(0).toLowerCase() + call.name.substring(1)}(request);
+    writeLine('```javascript');
+    if (request.fields.length === 0) {
+      writeLine('var request = {};');
+    } else {
+      writeLine('var request = {');
+      request.fields.forEach((field) => {
+        writeLine(`  ${snakeToCamelCase(field.name)}: <${field.type}${field.repeated ? '[]' : ''}>,`);
+      })
+      writeLine('};');
+    }
+    
+    if (call.stream) {
+      writeLine(`
+var call = ${serviceNameLower}Client.${call.name.charAt(0).toLowerCase() + call.name.substring(1)}(request);
 call.on('data', function (response) {
-  writeLine(response);
+  console.log(response);
 });
 call.on('error', function (err) {
   console.error(err);
@@ -266,85 +276,86 @@ call.on('error', function (err) {
 call.on('end', function () {
   // the streaming call has been ended by the server
 });`);
-  } else {
-    writeLine(`${serviceNameLower}Client.${call.name.charAt(0).toLowerCase() + call.name.substring(1)}(request, function(err, response) {
+    } else {
+      writeLine(`
+${serviceNameLower}Client.${call.name.charAt(0).toLowerCase() + call.name.substring(1)}(request, function(err, response) {
   if (err) {
     console.error(err);
   } else {
-    writeLine(response);
+    console.log(response);
   }
 });`);
-  }
+    }
 
+    if (response.fields.length === 0) {
+      writeLine('// Output: {}');
+    } else {
+      writeLine('// Output:');
+      writeLine('// {');
+      response.fields.forEach((field, index) => {
+        writeLine(`//  "${snakeToCamelCase(field.name)}": <${field.type}${field.repeated ? '[]' : ''}>${index < response.fields.length - 1 ? ',' : ''}`);
+      })
+      writeLine('// }');
+    }
+    writeLine('```');
 
-  if (response.fields.length === 0) {
-    writeLine('// Output: {}');
-  } else {
-    writeLine('// Output: ');
-    writeLine('// {');
-    response.fields.forEach((field, index) => {
-      writeLine(`//  "${snakeToCamelCase(field.name)}": <${field.type}${field.repeated ? '[]' : ''}>${index < response.fields.length - 1 ? ',' : ''}`);
-    })
-    writeLine('// }');
-  }
-  writeLine('```');
+    writeLine('```python');
+    if (request.fields.length === 0) {
+      writeLine(`request = ${serviceNameLower}.${request.name}()`);
+    } else {
+      writeLine(`request = ${serviceNameLower}.${request.name}(`);
+      request.fields.forEach((field) => {
+        writeLine(`  ${field.name}=<${field.type}${field.repeated ? '[]' : ''}>,`);
+      })
+      writeLine(')');
+    }
 
-  writeLine('```python');
-  if (request.fields.length === 0) {
-    writeLine(`request = ${serviceNameLower}.${request.name}()`);
-  } else {
-    writeLine(`request = ${serviceNameLower}.${request.name}(`);
-    request.fields.forEach((field) => {
-      writeLine(`  ${field.name}=<${field.type}${field.repeated ? '[]' : ''}>,`);
-    })
-    writeLine(')');
-  }
-
-  if (call.stream) {
-    writeLine(`for response in stub.${call.name}(request):
+    if (call.stream) {
+      writeLine(`for response in stub.${call.name}(request):
   print(response)`);
-  } else {
-    writeLine(`response = ${serviceNameLower}Stub.${call.name}(request)
+    } else {
+      writeLine(`response = ${serviceNameLower}Stub.${call.name}(request)
 print(response)`);
-  }
+    }
 
-  if (response.fields.length === 0) {
-    writeLine('# Output: {}');
-  } else {
-    writeLine('# Output: ');
-    writeLine('# {');
-    response.fields.forEach((field, index) => {
-      writeLine(`#  "${field.name}": <${field.type}${field.repeated ? '[]' : ''}>${index < response.fields.length - 1 ? ',' : ''}`);
-    })
-    writeLine('# }');
-  }
-  writeLine('```');
+    if (response.fields.length === 0) {
+      writeLine('# Output: {}');
+    } else {
+      writeLine('# Output:');
+      writeLine('# {');
+      response.fields.forEach((field, index) => {
+        writeLine(`#  "${field.name}": <${field.type}${field.repeated ? '[]' : ''}>${index < response.fields.length - 1 ? ',' : ''}`);
+      })
+      writeLine('# }');
+    }
+    writeLine('```');
 
-  if (call.shell) {
-    writeLine(`\`\`\`shell
-${call.shell}
-\`\`\``);
-  }
+    if (call.shell) {
+      writeLine(`\`\`\`shell
+  ${call.shell}
+  \`\`\``);
+    }
 
-  writeLine(call.comment);
+    writeLine(call.comment);
 
-  writeLine('### Request');
-  if (!request || request.fields.length === 0) {
-    writeLine('This request has no parameters.');
-  } else {
-    printFields(request.fields);
-  }
+    writeLine('### Request');
+    if (!request || request.fields.length === 0) {
+      writeLine('This request has no parameters.');
+    } else {
+      printFields(request.fields);
+    }
 
-  if (call.stream) {
-    writeLine('### Response (Streaming)');
-  } else {
-    writeLine('### Response');
-  }
-  if (!response || response.fields.length === 0) {
-    writeLine('This response has no parameters.');
-  } else {
-    printFields(response.fields); console
-  }
+    if (call.stream) {
+      writeLine('### Response (Streaming)');
+    } else {
+      writeLine('### Response');
+    }
+    if (!response || response.fields.length === 0) {
+      writeLine('This response has no parameters.');
+    } else {
+      printFields(response.fields); console
+    }
+  });
 });
 
 writeLine('# Messages');
